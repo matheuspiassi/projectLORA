@@ -1,85 +1,135 @@
 #include <HardwareSerial.h>
-#include <TinyGPSPlus.h>
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
+#include <LiquidCrystal_I2C.h>
 
 HardwareSerial LoRaSerial(2);
-HardwareSerial ss(1);
+LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 const int PIN_M0 = 19;
 const int PIN_M1 = 18;
+const int BTN_UP = 12;    
+const int BTN_DOWN = 14;   
+const int BTN_SELECT = 13; 
 
-TinyGPSPlus gps;
-Adafruit_MPU6050 mpu;
+double longitude = 0.0, latitude = 0.0;
+double accel_x = 0.0, accel_y = 0.0, accel_z = 0.0;
+
+int menuIndex = 0;          
+const int numOptions = 2;  
+bool displaySelected = false; 
+int lastMenuIndex = -1;     
+unsigned long lastUpdate = 0; 
+const unsigned long updateInterval = 2000;
 
 void setup() {
-  Serial.begin(115200);
   pinMode(PIN_M0, OUTPUT);
   pinMode(PIN_M1, OUTPUT);
-  
-  ss.begin(9600, SERIAL_8N1, 25, 26);
+  digitalWrite(PIN_M0, LOW);
+  digitalWrite(PIN_M1, HIGH);
+  lcd.init();
+  lcd.backlight();
+
+  pinMode(BTN_UP, INPUT_PULLUP);
+  pinMode(BTN_DOWN, INPUT_PULLUP);
+  pinMode(BTN_SELECT, INPUT_PULLUP);
+
   LoRaSerial.begin(9600, SERIAL_8N1, 17, 16);
-  
-  digitalWrite(PIN_M0, HIGH);
-  digitalWrite(PIN_M1, LOW);
-
-  // Verifica se o módulo GY-521 (MPU6050) está conectado
-  if (!mpu.begin()) {
-    Serial.println("Falha ao conectar o módulo");
-    while (1) {
-      delay(10);
-    }
-  }
-
-  Serial.println("Módulo conectado");
-  mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
-  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+  Serial.begin(115200);
 }
 
 void loop() {
-  while (ss.available() > 0) {
-    gps.encode(ss.read());
+  if (LoRaSerial.available()) {
+    String receivedMessage = LoRaSerial.readStringUntil('\n');
+    Serial.println("Recebido: " + receivedMessage);
 
-    if (gps.location.isUpdated()) {
-      // Captura os valores do GPS
-      double latitude = gps.location.lat();
-      double longitude = gps.location.lng();
+    longitude = extrairValor(receivedMessage, "longitude");
+    latitude = extrairValor(receivedMessage, "latitude");
+    accel_x = extrairValor(receivedMessage, "accel_x");
+    accel_y = extrairValor(receivedMessage, "accel_y");
+    accel_z = extrairValor(receivedMessage, "accel_z");
+  }
 
-      // Captura os valores do giroscópio e acelerômetro
-      sensors_event_t a, g, temp;
-      mpu.getEvent(&a, &g, &temp);
+  // Navegação do menu
+  if (!displaySelected) {
+    if (digitalRead(BTN_UP) == LOW) {
+      menuIndex = (menuIndex - 1 + numOptions) % numOptions; 
+      delay(200); 
+    } else if (digitalRead(BTN_DOWN) == LOW) {
+      menuIndex = (menuIndex + 1) % numOptions;
+      delay(200); 
+    } else if (digitalRead(BTN_SELECT) == LOW) {
+      displaySelected = true;
+      delay(200); 
+    }
 
-      // Cria a string JSON para enviar
-      String dadosParaEnviar = "{\"longitude\": ";
-      dadosParaEnviar += String(longitude, 2);
-      dadosParaEnviar += ", \"latitude\": ";
-      dadosParaEnviar += String(latitude, 2);
-      dadosParaEnviar += ", \"accel_x\": ";
-      dadosParaEnviar += String(a.acceleration.x, 2);
-      dadosParaEnviar += ", \"accel_y\": ";
-      dadosParaEnviar += String(a.acceleration.y, 2);
-      dadosParaEnviar += ", \"accel_z\": ";
-      dadosParaEnviar += String(a.acceleration.z, 2);
-      dadosParaEnviar += "}";
-
-      // Imprime os valores no monitor serial
-      Serial.print("Latitude: ");
-      Serial.println(latitude, 2);
-      Serial.print("Longitude: ");
-      Serial.println(longitude, 2);
-
-      Serial.print("Aceleração X: ");
-      Serial.print(a.acceleration.x);
-      Serial.print(", Y: ");
-      Serial.print(a.acceleration.y);
-      Serial.print(", Z: ");
-      Serial.print(a.acceleration.z);
-      Serial.println(" m/s^2");
-
-      // Envia os dados via LoRa
-      LoRaSerial.println(dadosParaEnviar);
-      delay(500);  // Atraso entre as transmissões
+    if (menuIndex != lastMenuIndex) {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Menu:");
+      lcd.setCursor(0, 1);
+      
+      switch (menuIndex) {
+        case 0:
+          lcd.print("> Coordenadas");
+          break;
+        case 1:
+          lcd.print("> Giroscopio");
+          break;
+      }
+      lastMenuIndex = menuIndex;
+    }
+  } else {
+    if (millis() - lastUpdate > updateInterval) {
+      lcd.clear();
+      switch (menuIndex) {
+        case 0:
+          // Exibir latitude e longitude
+          lcd.setCursor(0, 0);
+          lcd.print("Lat: ");
+          lcd.print(latitude, 2);
+          lcd.setCursor(0, 1);
+          lcd.print("Lon: ");
+          lcd.print(longitude, 2);
+          break;
+        case 1:
+          // Exibir dados do giroscópio
+          lcd.setCursor(0, 0);
+          lcd.print("Acc X: ");
+          lcd.print(accel_x, 2);
+          lcd.setCursor(0, 1);
+          lcd.print("Y: ");
+          lcd.print(accel_y, 2);
+          lcd.print(" Z: ");
+          lcd.print(accel_z, 2);
+          break;
+      }
+      lastUpdate = millis();
+      displaySelected = false; 
     }
   }
+
+  Serial.print("Latitude: ");
+  Serial.println(latitude, 6);
+  Serial.print("Longitude: ");
+  Serial.println(longitude, 6);
+  Serial.print("Aceleração X: ");
+  Serial.println(accel_x, 2);
+  Serial.print("Aceleração Y: ");
+  Serial.println(accel_y, 2);
+  Serial.print("Aceleração Z: ");
+  Serial.println(accel_z, 2);
+}
+
+double extrairValor(String json, String chave) {
+  int chaveInicio = json.indexOf(chave);
+  if (chaveInicio == -1) {
+    return 0.0;
+  }
+  int inicio = json.indexOf(":", chaveInicio);
+  int fim = json.indexOf(",", inicio);
+  if (fim == -1) {
+    fim = json.indexOf("}", inicio);
+  }
+  String valorString = json.substring(inicio + 1, fim);
+  valorString.trim(); 
+  return valorString.toDouble();
 }
